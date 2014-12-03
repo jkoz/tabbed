@@ -15,7 +15,7 @@
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
 #include <X11/XKBlib.h>
-
+#include <X11/Xft/Xft.h>
 #include "arg.h"
 
 /* XEMBED messages */
@@ -64,17 +64,16 @@ typedef struct {
 
 typedef struct {
 	int x, y, w, h;
-	unsigned long norm[ColLast];
-	unsigned long sel[ColLast];
-	unsigned long urg[ColLast];
+	XftColor norm[ColLast];
+	XftColor sel[ColLast];
+	XftColor urg[ColLast];
 	Drawable drawable;
 	GC gc;
 	struct {
 		int ascent;
 		int descent;
 		int height;
-		XFontSet set;
-		XFontStruct *xfont;
+		XftFont *xfont;
 	} font;
 } DC; /* draw context */
 
@@ -97,7 +96,7 @@ static void unmapnotify(const XEvent *e);
 static void destroynotify(const XEvent *e);
 static void die(const char *errstr, ...);
 static void drawbar(void);
-static void drawtext(const char *text, unsigned long col[ColLast]);
+static void drawtext(const char *text, XftColor col[ColLast]);
 static void *ecalloc(size_t n, size_t size);
 static void *erealloc(void *o, size_t size);
 static void expose(const XEvent *e);
@@ -107,7 +106,7 @@ static void focusonce(const Arg *arg);
 static void fullscreen(const Arg *arg);
 static char* getatom(int a);
 static int getclient(Window w);
-static unsigned long getcolor(const char *colstr);
+static XftColor getcolor(const char *colstr);
 static int getfirsttab(void);
 static Bool gettextprop(Window w, Atom atom, char *text, unsigned int size);
 static void initfont(const char *fontstr);
@@ -221,13 +220,10 @@ cleanup(void) {
 	}
 	free(clients);
 	clients = NULL;
-
-	if(dc.font.set) {
-		XFreeFontSet(dpy, dc.font.set);
-	} else {
-		XFreeFont(dpy, dc.font.xfont);
-	}
-
+	if (dc.font.xfont) XftFontClose(dpy, dc.font.xfont);
+	if (dc.norm) XftColorFree(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), DefaultColormap(dpy, DefaultScreen(dpy)), &dc.norm[ColLast]);
+	if (dc.sel) XftColorFree(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), DefaultColormap(dpy, DefaultScreen(dpy)), &dc.sel[ColLast]);
+	if (dc.urg) XftColorFree(dpy, DefaultVisual(dpy, DefaultScreen(dpy)), DefaultColormap(dpy, DefaultScreen(dpy)), &dc.urg[ColLast]);
 	XFreePixmap(dpy, dc.drawable);
 	XFreeGC(dpy, dc.gc);
 	XDestroyWindow(dpy, win);
@@ -317,7 +313,7 @@ die(const char *errstr, ...) {
 
 void
 drawbar(void) {
-	unsigned long *col;
+	XftColor *col;
 	int c, fc, width, n = 0;
 	char *name = NULL;
 
@@ -374,12 +370,13 @@ drawbar(void) {
 }
 
 void
-drawtext(const char *text, unsigned long col[ColLast]) {
+drawtext(const char *text, XftColor col[ColLast]) {
 	int i, x, y, h, len, olen;
 	char buf[256];
+	XftDraw *d;
 	XRectangle r = { dc.x, dc.y, dc.w, dc.h };
 
-	XSetForeground(dpy, dc.gc, col[ColBG]);
+	XSetForeground(dpy, dc.gc, col[ColBG].pixel);
 	XFillRectangles(dpy, dc.drawable, dc.gc, &r, 1);
 	if(!text)
 		return;
@@ -400,13 +397,10 @@ drawtext(const char *text, unsigned long col[ColLast]) {
 		for(i = len; i && i > len - 3; buf[--i] = '.');
 	}
 
-	XSetForeground(dpy, dc.gc, col[ColFG]);
-	if(dc.font.set) {
-		XmbDrawString(dpy, dc.drawable, dc.font.set,
-				dc.gc, x, y, buf, len);
-	} else {
-		XDrawString(dpy, dc.drawable, dc.gc, x, y, buf, len);
-	}
+	XSetForeground(dpy, dc.gc, col[ColFG].pixel);
+	d = XftDrawCreate(dpy, dc.drawable, DefaultVisual(dpy, screen), DefaultColormap(dpy,screen));
+	XftDrawStringUtf8(d, &col[ColFG], dc.font.xfont, x, y, (XftChar8 *) buf, len);
+	XftDrawDestroy(d);
 }
 
 void *
@@ -543,15 +537,14 @@ getclient(Window w) {
 	return -1;
 }
 
-unsigned long
+XftColor
 getcolor(const char *colstr) {
-	Colormap cmap = DefaultColormap(dpy, screen);
-	XColor color;
+	XftColor color;
 
-	if(!XAllocNamedColor(dpy, cmap, colstr, &color, &color))
+	if(!XftColorAllocName(dpy, DefaultVisual(dpy, screen), DefaultColormap(dpy, screen), colstr, &color))
 		die("tabbed: cannot allocate color '%s'\n", colstr);
 
-	return color.pixel;
+	return color;
 }
 
 int
@@ -604,41 +597,11 @@ gettextprop(Window w, Atom atom, char *text, unsigned int size) {
 
 void
 initfont(const char *fontstr) {
-	char *def, **missing, **font_names;
-	int i, n;
-	XFontStruct **xfonts;
+	if(!(dc.font.xfont = XftFontOpenName(dpy,screen,fontstr)) && !(dc.font.xfont = XftFontOpenName(dpy,screen,"fixed")))
+		die("error, cannot load font: '%s'\n", fontstr);
 
-	missing = NULL;
-	if(dc.font.set)
-		XFreeFontSet(dpy, dc.font.set);
-
-	dc.font.set = XCreateFontSet(dpy, fontstr, &missing, &n, &def);
-	if(missing) {
-		while(n--)
-			fprintf(stderr, "tabbed: missing fontset: %s\n", missing[n]);
-		XFreeStringList(missing);
-	}
-
-	if(dc.font.set) {
-		dc.font.ascent = dc.font.descent = 0;
-		n = XFontsOfFontSet(dc.font.set, &xfonts, &font_names);
-		for(i = 0, dc.font.ascent = 0, dc.font.descent = 0; i < n; i++) {
-			dc.font.ascent = MAX(dc.font.ascent, (*xfonts)->ascent);
-			dc.font.descent = MAX(dc.font.descent,(*xfonts)->descent);
-			xfonts++;
-		}
-	} else {
-		if(dc.font.xfont)
-			XFreeFont(dpy, dc.font.xfont);
-		dc.font.xfont = NULL;
-		if(!(dc.font.xfont = XLoadQueryFont(dpy, fontstr))
-				&& !(dc.font.xfont = XLoadQueryFont(dpy, "fixed"))) {
-			die("tabbed: cannot load font: '%s'\n", fontstr);
-		}
-
-		dc.font.ascent = dc.font.xfont->ascent;
-		dc.font.descent = dc.font.xfont->descent;
-	}
+	dc.font.ascent = dc.font.xfont->ascent;
+	dc.font.descent = dc.font.xfont->descent;
 	dc.font.height = dc.font.ascent + dc.font.descent;
 }
 
@@ -1010,11 +973,8 @@ setup(void) {
 	dc.drawable = XCreatePixmap(dpy, root, ww, wh,
 			DefaultDepth(dpy, screen));
 	dc.gc = XCreateGC(dpy, root, 0, 0);
-	if(!dc.font.set)
-		XSetFont(dpy, dc.gc, dc.font.xfont->fid);
 
-	win = XCreateSimpleWindow(dpy, root, wx, wy, ww, wh, 0,
-			dc.norm[ColFG], dc.norm[ColBG]);
+	win = XCreateSimpleWindow(dpy, root, wx, wy, ww, wh, 0, dc.norm[ColFG].pixel, dc.norm[ColBG].pixel);
 	XMapRaised(dpy, win);
 	XSelectInput(dpy, win, SubstructureNotifyMask|FocusChangeMask|
 			ButtonPressMask|ExposureMask|KeyPressMask|PropertyChangeMask|
@@ -1080,15 +1040,9 @@ spawn(const Arg *arg) {
 
 int
 textnw(const char *text, unsigned int len) {
-	XRectangle r;
-
-	if(dc.font.set) {
-		XmbTextExtents(dc.font.set, text, len, NULL, &r);
-
-		return r.width;
-	}
-
-	return XTextWidth(dc.font.xfont, text, len);
+	XGlyphInfo ext;
+	XftTextExtentsUtf8(dpy, dc.font.xfont, (XftChar8 *) text, len, &ext);
+	return ext.xOff;
 }
 
 void

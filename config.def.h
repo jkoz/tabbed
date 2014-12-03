@@ -1,7 +1,7 @@
 /* See LICENSE file for copyright and license details. */
 
 /* appearance */
-static const char font[]        = "-*-*-medium-*-*-*-14-*-*-*-*-*-*-*";
+static const char font[] = "Source Code Pro:size=10:antialias=true";
 static const char* normbgcolor  = "#222222";
 static const char* normfgcolor  = "#cccccc";
 static const char* selbgcolor   = "#555555";
