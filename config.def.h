@@ -22,8 +22,8 @@ static int  newposition   = 0;
 static Bool npisrelative  = False;
 
 #define SETPROP(p) { \
-	.v = (char *[]){ "/bin/sh", "-c", \
-		"prop=\"`xwininfo -children -id $1 | grep '^     0x' | sed -e's@^ *\\(0x[0-9a-f]*\\) \"\\([^\"]*\\)\".*@\\1 \\2@' | xargs -0 printf %b | dmenu -l 10`\" &&" \
+	.v = (char *[]){ "st", "-c", "Fzf", "-e", "sh", "-c", \
+		"xdotool search 'Fzf' windowsize 100% 50%; prop=\"`xwininfo -children -id $1 | grep '^     0x' | sed -e's@^ *\\(0x[0-9a-f]*\\) \"\\([^\"]*\\)\".*@\\1 \\2@' | xargs -0 printf %b | dm `\" &&" \
 		"xprop -id $1 -f $0 8s -set $0 \"$prop\"", \
 		p, winid, NULL \
 	} \
